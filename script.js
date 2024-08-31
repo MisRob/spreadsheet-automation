@@ -4,14 +4,35 @@ const SPREADSHEET_ID = process.env.SPREADSHEET_ID;
 const SHEET_NAME = process.env.SHEET_NAME;
 const GOOGLE_CREDENTIALS = process.env.GOOGLE_CREDENTIALS;
 
+// Validate environment variables
+function validateEnvVariables() {
+  const missingVars = [];
+  if (!SPREADSHEET_ID) missingVars.push("SPREADSHEET_ID");
+  if (!SHEET_NAME) missingVars.push("SHEET_NAME");
+  if (!GOOGLE_CREDENTIALS) missingVars.push("GOOGLE_CREDENTIALS");
+
+  if (missingVars.length > 0) {
+    throw new Error(
+      `Missing required environment variables: ${missingVars.join(", ")}`
+    );
+  }
+}
+
 // Set up GoogleAuth for Google Sheets API
 async function authorize() {
-  const auth = new google.auth.GoogleAuth({
-    credentials: JSON.parse(GOOGLE_CREDENTIALS),
-    scopes: ["https://www.googleapis.com/auth/spreadsheets"],
-  });
-  const authClient = await auth.getClient();
-  return google.sheets({ version: "v4", auth: authClient });
+  try {
+    const credentials = JSON.parse(GOOGLE_CREDENTIALS);
+    const auth = new google.auth.GoogleAuth({
+      credentials,
+      scopes: ["https://www.googleapis.com/auth/spreadsheets"],
+    });
+    const authClient = await auth.getClient();
+    return google.sheets({ version: "v4", auth: authClient });
+  } catch (error) {
+    throw new Error(
+      `Failed to authorize: ${error.message}. Please check your GOOGLE_CREDENTIALS.`
+    );
+  }
 }
 
 // Update Google Sheets with pull request data
@@ -28,66 +49,70 @@ async function updateSpreadsheet(pullRequest) {
     pullRequest.assignees || "",
   ];
 
-  // Check if the pull request already exists in the spreadsheet
-  const { data } = await sheets.spreadsheets.values.get({
-    spreadsheetId: SPREADSHEET_ID,
-    range: SHEET_NAME,
-  });
+  try {
+    // Check if the pull request already exists in the spreadsheet
+    const { data } = await sheets.spreadsheets.values.get({
+      spreadsheetId: SPREADSHEET_ID,
+      range: SHEET_NAME,
+    });
 
-  const existingRows = data.values || [];
-  let rowToUpdate = null;
+    const existingRows = data.values || [];
+    let rowToUpdate = null;
 
-  for (let i = 1; i < existingRows.length; i++) {
-    if (existingRows[i][1] === pullRequest.html_url) {
-      rowToUpdate = i + 1;
-      break;
-    }
-  }
-
-  if (rowToUpdate) {
-    const existingData = existingRows[rowToUpdate - 1];
-    const prDataString = JSON.stringify(prData);
-    const existingDataString = JSON.stringify(existingData);
-
-    // Compare entire row data
-    if (prDataString !== existingDataString) {
-      console.log(`Detected changes for row ${rowToUpdate}.`);
-
-      const updates = [];
-      const columns = ["A", "B", "C", "D", "E", "F", "G", "H"];
-      for (let col = 0; col < prData.length; col++) {
-        if (existingData[col] !== prData[col]) {
-          updates.push({
-            range: `${SHEET_NAME}!${columns[col]}${rowToUpdate}`,
-            values: [[prData[col]]],
-          });
-        }
+    for (let i = 1; i < existingRows.length; i++) {
+      if (existingRows[i][1] === pullRequest.html_url) {
+        rowToUpdate = i + 1;
+        break;
       }
+    }
 
-      // Batch update the changed columns
-      if (updates.length > 0) {
-        await sheets.spreadsheets.values.batchUpdate({
-          spreadsheetId: SPREADSHEET_ID,
-          resource: {
-            data: updates,
-            valueInputOption: "RAW",
-          },
-        });
-        console.log(`Updated row ${rowToUpdate} in Google Sheets.`);
+    if (rowToUpdate) {
+      const existingData = existingRows[rowToUpdate - 1];
+      const prDataString = JSON.stringify(prData);
+      const existingDataString = JSON.stringify(existingData);
+
+      // Compare entire row data
+      if (prDataString !== existingDataString) {
+        console.log(`Detected changes for row ${rowToUpdate}.`);
+
+        const updates = [];
+        const columns = ["A", "B", "C", "D", "E", "F", "G", "H"];
+        for (let col = 0; col < prData.length; col++) {
+          if (existingData[col] !== prData[col]) {
+            updates.push({
+              range: `${SHEET_NAME}!${columns[col]}${rowToUpdate}`,
+              values: [[prData[col]]],
+            });
+          }
+        }
+
+        // Batch update the changed columns
+        if (updates.length > 0) {
+          await sheets.spreadsheets.values.batchUpdate({
+            spreadsheetId: SPREADSHEET_ID,
+            resource: {
+              data: updates,
+              valueInputOption: "RAW",
+            },
+          });
+          console.log(`Updated row ${rowToUpdate} in Google Sheets.`);
+        } else {
+          console.log(`No changes detected for row ${rowToUpdate}.`);
+        }
       } else {
         console.log(`No changes detected for row ${rowToUpdate}.`);
       }
     } else {
-      console.log(`No changes detected for row ${rowToUpdate}.`);
+      await sheets.spreadsheets.values.append({
+        spreadsheetId: SPREADSHEET_ID,
+        range: `${SHEET_NAME}!A:H`,
+        valueInputOption: "RAW",
+        resource: { values: [prData] },
+      });
+      console.log(`Added new row to Google Sheets.`);
     }
-  } else {
-    await sheets.spreadsheets.values.append({
-      spreadsheetId: SPREADSHEET_ID,
-      range: `${SHEET_NAME}!A:H`,
-      valueInputOption: "RAW",
-      resource: { values: [prData] },
-    });
-    console.log(`Added new row to Google Sheets.`);
+  } catch (error) {
+    throw new Error(`Failed to update spreadsheet: ${error.message}`);
   }
 }
 
@@ -107,11 +132,25 @@ async function handlePullRequestChange(pullRequest) {
   }
 }
 
+// Validate environment variables
+try {
+  validateEnvVariables();
+} catch (error) {
+  console.error(error.message);
+  process.exit(1);
+}
+
 // Parse command-line arguments
-const pullRequest = JSON.parse(process.argv[2]);
+let pullRequest;
+try {
+  pullRequest = JSON.parse(process.argv[2]);
+} catch (error) {
+  console.error(`Failed to parse pull request data: ${error.message}`);
+  process.exit(1);
+}
 
 // Run the script
 handlePullRequestChange(pullRequest).catch((error) => {
-  console.error("An error occurred:", error);
+  console.error("An error occurred:", error.message);
   process.exit(1);
 });
