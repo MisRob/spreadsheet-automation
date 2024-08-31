@@ -1,25 +1,13 @@
-const axios = require("axios");
 const { google } = require("googleapis");
-const path = require("path");
-require("dotenv").config();
 
-const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
 const SPREADSHEET_ID = process.env.SPREADSHEET_ID;
 const SHEET_NAME = process.env.SHEET_NAME;
-const CREDENTIALS_PATH = path.resolve(__dirname, process.env.CREDENTIALS_PATH);
-
-// Fetch details of a specific pull request using its API link
-async function fetchPullRequestDetails(prUrl) {
-  const response = await axios.get(prUrl, {
-    headers: { Authorization: `token ${GITHUB_TOKEN}` },
-  });
-  return response.data;
-}
+const GOOGLE_CREDENTIALS = process.env.GOOGLE_CREDENTIALS;
 
 // Set up GoogleAuth for Google Sheets API
 async function authorize() {
   const auth = new google.auth.GoogleAuth({
-    keyFile: CREDENTIALS_PATH,
+    credentials: JSON.parse(GOOGLE_CREDENTIALS),
     scopes: ["https://www.googleapis.com/auth/spreadsheets"],
   });
   const authClient = await auth.getClient();
@@ -32,12 +20,12 @@ async function updateSpreadsheet(pullRequest) {
   const prData = [
     pullRequest.merged_at ? pullRequest.merged_at.split("T")[0] : "",
     pullRequest.html_url || "",
-    pullRequest.user.login || "",
+    pullRequest.user_login || "",
     pullRequest.title || "",
-    pullRequest.base.repo.name || "",
+    pullRequest.repo_name || "",
     pullRequest.updated_at ? pullRequest.updated_at.split("T")[0] : "",
-    pullRequest.requested_reviewers.map((r) => r.login).join(",") || "",
-    pullRequest.assignees.map((a) => a.login).join(",") || "",
+    pullRequest.requested_reviewers || "",
+    pullRequest.assignees || "",
   ];
 
   // Check if the pull request already exists in the spreadsheet
@@ -104,14 +92,11 @@ async function updateSpreadsheet(pullRequest) {
 }
 
 // Main function to handle pull request changes
-async function handlePullRequestChange(prUrl) {
-  console.log(`Fetching pull request details from ${prUrl}...`);
-  const pullRequest = await fetchPullRequestDetails(prUrl);
-
+async function handlePullRequestChange(pullRequest) {
   // Filter out PRs from members of the organization
   if (
-    !pullRequest.user.site_admin &&
-    pullRequest.user.type === "User" &&
+    !pullRequest.user_site_admin &&
+    pullRequest.user_type === "User" &&
     !pullRequest.author_association.includes("MEMBER")
   ) {
     await updateSpreadsheet(pullRequest);
@@ -122,19 +107,11 @@ async function handlePullRequestChange(prUrl) {
   }
 }
 
-// Example usage
-async function run() {
-  console.log("Starting script...");
+// Parse command-line arguments
+const pullRequest = JSON.parse(process.argv[2]);
 
-  // This is an example pull request URL from the GitHub API
-  const prUrl =
-    "https://api.github.com/repos/learningequality/kolibri-design-system/pulls/747";
-  try {
-    await handlePullRequestChange(prUrl);
-    console.log("Script completed successfully.");
-  } catch (error) {
-    console.error("An error occurred:", error);
-  }
-}
-
-run();
+// Run the script
+handlePullRequestChange(pullRequest).catch((error) => {
+  console.error("An error occurred:", error);
+  process.exit(1);
+});
